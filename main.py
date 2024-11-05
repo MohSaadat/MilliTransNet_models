@@ -11,7 +11,7 @@ import json
 from tqdm import tqdm
 import random
 
-import MilliTransNet
+from src.transformers.MilliTransNet import MilliTransNet
 
 # fixed
 INPUT_DIR = os.path.join('..','input_data')
