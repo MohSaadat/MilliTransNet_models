@@ -12,6 +12,7 @@ import random
 
 from transformer_modules import MilliTransNet
 from Utils.DataUtils import get_dataset
+from Utils.get_device import get_inference_device_config
 
 # Directories
 INPUT_DIR = os.path.join('..','input_data')
@@ -43,7 +44,8 @@ def initialize_run():
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size [default: 32]')
     parser.add_argument('--epochs', type=int, default=50, help='Epoch to run [default: 50]')
-    parser.add_argument('--gpu', type=int, default=0, help='GPU to use [default: GPU 0]: uses CPU if GPU not available or index is out of range')
+    parser.add_argument('--gpu', type=int, default=None, help='GPU to use [default: auto-select a free GPU; use -1 for CPU]')
+    parser.add_argument('--gpu_threshold_gb', type=float, default=4.0, help='Minimum free GPU memory required for auto-selection [default: 4.0]')
     parser.add_argument('--restore_dir', type=str, default=None, help='Checkpoint restore directory - '
                                                                       'set None if checkpoint is not to be restored [default: None]')
 
@@ -64,10 +66,17 @@ def initialize_run():
     parser.add_argument('--grad_norm_lim', type=float, default=1.0, help='...<0.0 indicates no norm clipping> [default: 1.0]')
 
     flags = parser.parse_args()
+    device_config = get_inference_device_config(
+        device_index=flags.gpu,
+        threshold_gb=flags.gpu_threshold_gb
+    )
     config = {
         'BATCH_SIZE': flags.batch_size,
         'N_EPOCHS': flags.epochs,
-        'GPU': flags.gpu,
+        'REQUESTED_GPU': flags.gpu,
+        'GPU': device_config['resolved_device_index'],
+        'GPU_THRESHOLD_GB': flags.gpu_threshold_gb,
+        'AVAILABLE_GPU_INDICES': device_config['available_device_indices'],
         'RESTORE_DIR': flags.restore_dir,
         'NJOINTS': NJOINTS,
         'BASE_LR': flags.base_lr,
@@ -83,12 +92,11 @@ def initialize_run():
         'BASE_WEIGHT_DECAY': flags.base_weight_decay,
         'GRAD_NORM_LIM': flags.grad_norm_lim
     }
-    config['DEVICE'] = torch.device(
-        f'cuda:{config["GPU"]}'
-        if torch.cuda.is_available() and config['GPU'] in range(torch.cuda.device_count())
-        else 'cpu'
+    config['DEVICE'] = device_config['torch_device']
+    print(
+        f'Running on {config["DEVICE"]} '
+        f'(requested gpu={config["REQUESTED_GPU"]}, resolved gpu={config["GPU"]})'
     )
-    print(f'Running on {config["DEVICE"]}')
 
     config['JOINTS_IDX'] = torch.tensor([(i not in JOINTS_IGNORE_IDX) for i in range(NJOINTS)])
     config['NRANGES'] = int(DATA_PARAMS['nRanges']) if 'nRanges' in DATA_PARAMS else 104
@@ -106,6 +114,8 @@ def initialize_run():
         'BATCH SIZE':           config['BATCH_SIZE'],
         'EPOCHS':               config['N_EPOCHS'],
         'GPU':                  config['GPU'],
+        'REQUESTED_GPU':        config['REQUESTED_GPU'],
+        'GPU_THRESHOLD_GB':     config['GPU_THRESHOLD_GB'],
         'RESTORE_DIR':          config['RESTORE_DIR'],
         'BASE_LR':              config['BASE_LR'],
         'DECAY_RATE':           config['DECAY_RATE'],
@@ -157,7 +167,10 @@ def train_n_validate(config):
         f.write(json.dumps(config['PARAMS'], default=str))
 
     if config['RESTORE_DIR']:
-        milli_transnet = torch.load(os.path.join(config['RESTORE_DIR'],'milli_transnet_final.pth'))
+        milli_transnet = torch.load(
+            os.path.join(config['RESTORE_DIR'],'milli_transnet_final.pth'),
+            map_location=config['DEVICE']
+        )
         milli_transnet.set_device(config['DEVICE'])
     else:
         milli_transnet = MilliTransNet.MilliTransNet(config['NRANGES'],config['NDOPPLER'],config['LONG_CH_SIZE'],config['SHORT_CH_SIZE'],config['SEQ_LEN'],
@@ -222,6 +235,7 @@ def train_n_validate(config):
 
 def run_one_epoch(net,dataset,config,is_learning,curr_lr,curr_wd):
     net.set_trainable(is_learning)
+    device = config['DEVICE']
 
     if is_learning:
         net.train()
@@ -238,11 +252,11 @@ def run_one_epoch(net,dataset,config,is_learning,curr_lr,curr_wd):
 
     loss_epoch = 0
     for b in tqdm(range(n_batches)):
-        curr_h_seq = h_seq[b*config['BATCH_SIZE']:min(n_datapoints,(b+1)*config['BATCH_SIZE']),:,:,:,:,:].to(torch.device(config['DEVICE']))
-        curr_v_seq = v_seq[b*config['BATCH_SIZE']:min(n_datapoints,(b+1)*config['BATCH_SIZE']),:,:,:,:,:].to(torch.device(config['DEVICE']))
-        curr_joints_seq = torch.permute(joints_seq[b*config['BATCH_SIZE']:min(n_datapoints,(b+1)*config['BATCH_SIZE']),:,:,:],(0,3,1,2)).view(config['BATCH_SIZE'],config['SEQ_LEN'],-1).to(torch.device(config['DEVICE']))
+        curr_h_seq = h_seq[b*config['BATCH_SIZE']:min(n_datapoints,(b+1)*config['BATCH_SIZE']),:,:,:,:,:].to(device)
+        curr_v_seq = v_seq[b*config['BATCH_SIZE']:min(n_datapoints,(b+1)*config['BATCH_SIZE']),:,:,:,:,:].to(device)
+        curr_joints_seq = torch.permute(joints_seq[b*config['BATCH_SIZE']:min(n_datapoints,(b+1)*config['BATCH_SIZE']),:,:,:],(0,3,1,2)).view(config['BATCH_SIZE'],config['SEQ_LEN'],-1).to(device)
 
-        valid_indices = torch.ones((config['BATCH_SIZE'],config['SEQ_LEN']), dtype=torch.float32).to(torch.device(config['DEVICE'])) # currently, let's train for regularly sampled input
+        valid_indices = torch.ones((config['BATCH_SIZE'],config['SEQ_LEN']), dtype=torch.float32).to(device) # currently, let's train for regularly sampled input
 
         curr_pred_joints_seq = net(curr_h_seq,curr_v_seq,valid_indices)
         curr_loss = net.get_loss(curr_joints_seq,curr_pred_joints_seq)

@@ -7,6 +7,7 @@ from tqdm import tqdm
 import argparse
 import time
 from Utils.DataUtils import get_dataset
+from Utils.get_device import get_inference_device_config
 
 INPUT_DIR = os.path.join('..','input_data')
 TESTING_DIR = os.path.join(INPUT_DIR,'test')
@@ -14,17 +15,25 @@ DATA_PARAMS = loadmat(os.path.join(INPUT_DIR,'data_parameters.mat'))
 
 def initialize_run():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu',type=int,default=7,help='GPU to use [default: 7]')
+    parser.add_argument('--gpu',type=int,default=None,help='GPU to use [default: auto-select a free GPU; use -1 for CPU]')
+    parser.add_argument('--gpu_threshold_gb', type=float, default=4.0, help='Minimum free GPU memory required for auto-selection [default: 4.0]')
     parser.add_argument('--restore_dir', type=str, default=os.path.join('saved_models','model_modified_inp_proc24'),
                         help='Checkpoint restore directory [default: saved_models/model_modified_inp_proc24]')
     flags = parser.parse_args()
+    device_config = get_inference_device_config(
+        device_index=flags.gpu,
+        threshold_gb=flags.gpu_threshold_gb
+    )
 
     with open(os.path.join(flags.restore_dir,'parameters.json'),'r') as f:
         params = json.load(f)
 
     joints_ignore_key = 'JOINTS_IGNORE_IDX' if 'JOINTS_IGNORE_IDX' in params else 'JOINTS_IGNORED_IDX'
     config = {
-        'GPU': flags.gpu,
+        'REQUESTED_GPU': flags.gpu,
+        'GPU': device_config['resolved_device_index'],
+        'GPU_THRESHOLD_GB': flags.gpu_threshold_gb,
+        'AVAILABLE_GPU_INDICES': device_config['available_device_indices'],
         'RESTORE_DIR': flags.restore_dir,
         'PARAMS': params,
         'NJOINTS': int(params['NJOINTS']),
@@ -42,12 +51,11 @@ def initialize_run():
         'MAX_ELEV': float(DATA_PARAMS['maxElev'])
     }
     config['JOINTS_IDX'] = torch.tensor([(i not in config['JOINTS_IGNORE_IDX']) for i in range(config['NJOINTS'])])
-    config['DEVICE'] = torch.device(
-        f'cuda:{config["GPU"]}'
-        if torch.cuda.is_available() and config['GPU'] in range(torch.cuda.device_count())
-        else 'cpu'
+    config['DEVICE'] = device_config['torch_device']
+    print(
+        f'Running on {config["DEVICE"]} '
+        f'(requested gpu={config["REQUESTED_GPU"]}, resolved gpu={config["GPU"]})'
     )
-    print(f'Running on {config["DEVICE"]}')
     return config
 
 def descale_n_convert(joints, config):
@@ -71,8 +79,10 @@ def descale_n_convert(joints, config):
 
 def test(config):
     milli_transnet = torch.load(os.path.join(config['RESTORE_DIR'],'milli_transnet_final.pth'), map_location=config['DEVICE'])
+    milli_transnet.set_device(config['DEVICE'])
     milli_transnet.set_trainable(False)
     milli_transnet.eval()
+    device = config['DEVICE']
 
     print('Loading data...')
     h_seq, v_seq, joints_seq = get_dataset(TESTING_DIR, config)
@@ -108,10 +118,10 @@ def test(config):
     inf_time = []
     for data_id in tqdm(range(n_datapoints)):
 
-        curr_h_seq = h_seq[data_id,:,:,:,:,:].unsqueeze(0).to(torch.device(config['DEVICE']))
-        curr_v_seq = v_seq[data_id,:,:,:,:,:].unsqueeze(0).to(torch.device(config['DEVICE']))
+        curr_h_seq = h_seq[data_id,:,:,:,:,:].unsqueeze(0).to(device)
+        curr_v_seq = v_seq[data_id,:,:,:,:,:].unsqueeze(0).to(device)
         curr_joints_seq = torch.permute(joints_seq[data_id,:,:,:],(2,0,1)) # we are not computing loss, so do not transfer to gpu
-        valid_indices = torch.ones((1,config['SEQ_LEN']),dtype=torch.float32).to(torch.device(config['DEVICE'])) # current models have all been trained with full sampling
+        valid_indices = torch.ones((1,config['SEQ_LEN']),dtype=torch.float32).to(device) # current models have all been trained with full sampling
 
         begin_time = time.time()
         curr_pred_joints_seq = milli_transnet(curr_h_seq,curr_v_seq,valid_indices).detach().cpu().squeeze(0).view(config['SEQ_LEN'],-1,3)
