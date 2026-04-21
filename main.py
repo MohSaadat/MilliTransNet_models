@@ -10,7 +10,14 @@ import json
 from tqdm import tqdm
 import random
 
-from transformer_modules import MilliTransNet
+from Utils.checkpoints import (
+    FINAL_CHECKPOINT_NAME,
+    LATEST_CHECKPOINT_NAME,
+    build_milli_transnet,
+    load_milli_transnet_checkpoint,
+    resolve_checkpoint_path,
+    save_training_checkpoint,
+)
 from Utils.DataUtils import get_dataset
 from Utils.get_device import get_inference_device_config
 
@@ -34,6 +41,40 @@ ALL_LR = []
 ALL_WD = []
 TRAINING_LOSS = []
 VALIDATION_LOSS = []
+
+
+def _history_to_numpy(values):
+    history = []
+    for value in values:
+        if isinstance(value, torch.Tensor):
+            history.append(float(value.detach().cpu().item()))
+        else:
+            history.append(float(value))
+    return np.asarray(history, dtype=np.float32)
+
+
+def save_training_artifacts(model, model_dir, epoch, next_lr, next_wd):
+    save_training_checkpoint(
+        model=model,
+        checkpoint_path=os.path.join(model_dir, LATEST_CHECKPOINT_NAME),
+        epoch=epoch,
+        next_lr=next_lr,
+        next_wd=next_wd,
+        all_lr=ALL_LR,
+        all_wd=ALL_WD,
+        training_loss=TRAINING_LOSS,
+        validation_loss=VALIDATION_LOSS
+    )
+    np.savez(
+        os.path.join(model_dir, 'loss.npz'),
+        TRAINING_LOSS=_history_to_numpy(TRAINING_LOSS),
+        VALIDATION_LOSS=_history_to_numpy(VALIDATION_LOSS)
+    )
+    np.savez(
+        os.path.join(model_dir, 'lr.npz'),
+        LEARNING_RATES=_history_to_numpy(ALL_LR),
+        WEIGHT_DECAYS=_history_to_numpy(ALL_WD)
+    )
 
 def initialize_run():
     '''
@@ -170,20 +211,37 @@ def train_n_validate(config):
     with open(os.path.join(MODEL_DIR, 'parameters.json'), 'w') as f:
         f.write(json.dumps(config['PARAMS'], default=str))
 
+    start_epoch = 0
+    curr_lr = config['BASE_LR']
+    curr_wd = config['BASE_WEIGHT_DECAY']
     if config['RESTORE_DIR']:
-        milli_transnet = torch.load(
-            os.path.join(config['RESTORE_DIR'],'milli_transnet_final.pth'),
-            map_location=config['DEVICE']
+        checkpoint_path = resolve_checkpoint_path(config['RESTORE_DIR'], prefer_final=False)
+        milli_transnet, checkpoint = load_milli_transnet_checkpoint(
+            checkpoint_path,
+            config,
+            load_optimizer=True
         )
-        milli_transnet.set_device(config['DEVICE'])
+        if checkpoint.get('epoch') is not None:
+            start_epoch = int(checkpoint['epoch']) + 1
+        if checkpoint.get('next_lr') is not None:
+            curr_lr = float(checkpoint['next_lr'])
+        if checkpoint.get('next_wd') is not None:
+            curr_wd = float(checkpoint['next_wd'])
+        if checkpoint.get('all_lr') is not None:
+            ALL_LR.clear()
+            ALL_LR.extend(float(value) for value in checkpoint['all_lr'])
+        if checkpoint.get('all_wd') is not None:
+            ALL_WD.clear()
+            ALL_WD.extend(float(value) for value in checkpoint['all_wd'])
+        if checkpoint.get('training_loss') is not None:
+            TRAINING_LOSS.clear()
+            TRAINING_LOSS.extend(float(value) for value in checkpoint['training_loss'])
+        if checkpoint.get('validation_loss') is not None:
+            VALIDATION_LOSS.clear()
+            VALIDATION_LOSS.extend(float(value) for value in checkpoint['validation_loss'])
+        print(f'Restored checkpoint from {checkpoint_path} at epoch {start_epoch}')
     else:
-        milli_transnet = MilliTransNet.MilliTransNet(config['NRANGES'],config['NDOPPLER'],config['LONG_CH_SIZE'],config['SHORT_CH_SIZE'],config['SEQ_LEN'],
-                                                     config['JOINTS_IDX'],
-                                                     config['SHAPE_CODE_SIZE'],config['N_LAYERS'],config['N_HEADS'],config['N_DROPOUT'],config['FWD_EXPANSION'],
-                                                     output_process=config['OUTPUT_PROCESSING'],
-                                                     initializer=config['MODEL_INIT'],
-                                                     optimizer=config['OPTIMIZER'])
-        milli_transnet.set_device(config['DEVICE'])
+        milli_transnet = build_milli_transnet(config)
 
     h_seq_train, v_seq_train, joints_seq_train = get_dataset(TRAINING_DIR, config)
     h_seq_valid, v_seq_valid, joints_seq_valid = get_dataset(VALIDATION_DIR, config)
@@ -202,9 +260,32 @@ def train_n_validate(config):
     #exit()
     #----------------------------------------------------#
 
-    curr_lr = config['BASE_LR']
-    curr_wd = config['BASE_WEIGHT_DECAY']
-    for n_epochs in range(config['N_EPOCHS']):
+    if start_epoch >= config['N_EPOCHS']:
+        print(
+            f'Checkpoint already completed {start_epoch} epochs, '
+            f'which meets or exceeds requested epochs={config["N_EPOCHS"]}.'
+        )
+        save_training_artifacts(
+            model=milli_transnet,
+            model_dir=MODEL_DIR,
+            epoch=max(start_epoch - 1, 0),
+            next_lr=curr_lr,
+            next_wd=curr_wd
+        )
+        save_training_checkpoint(
+            model=milli_transnet,
+            checkpoint_path=os.path.join(MODEL_DIR, FINAL_CHECKPOINT_NAME),
+            epoch=max(start_epoch - 1, 0),
+            next_lr=curr_lr,
+            next_wd=curr_wd,
+            all_lr=ALL_LR,
+            all_wd=ALL_WD,
+            training_loss=TRAINING_LOSS,
+            validation_loss=VALIDATION_LOSS
+        )
+        return
+
+    for n_epochs in range(start_epoch, config['N_EPOCHS']):
         print(f'Epoch: {n_epochs}')
         begin_time = time.time()
         run_one_epoch(milli_transnet,[h_seq_train,v_seq_train,joints_seq_train],config,is_learning=True,curr_lr=curr_lr,curr_wd=curr_wd)
@@ -220,22 +301,39 @@ def train_n_validate(config):
 
         print(f'Training loss: {TRAINING_LOSS[-1]} \t Validation loss: {VALIDATION_LOSS[-1]}')
         print(f'Executed in {end_time-begin_time} seconds')
+        save_training_artifacts(
+            model=milli_transnet,
+            model_dir=MODEL_DIR,
+            epoch=n_epochs,
+            next_lr=curr_lr,
+            next_wd=curr_wd
+        )
         if n_epochs % 10 == 0:
             print(f'Saving model to {MODEL_DIR}')
-            torch.save(milli_transnet, os.path.join(MODEL_DIR, f'milli_transnet_ep{n_epochs}.pth'))
-            np.savez(os.path.join(MODEL_DIR, 'loss.npz'),
-                     TRAINING_LOSS=TRAINING_LOSS,
-                     VALIDATION_LOSS=VALIDATION_LOSS)
-            np.savez(os.path.join(MODEL_DIR, 'lr.npz'),
-                     LEARNING_RATES=ALL_LR)
+            save_training_checkpoint(
+                model=milli_transnet,
+                checkpoint_path=os.path.join(MODEL_DIR, f'milli_transnet_ep{n_epochs}.pth'),
+                epoch=n_epochs,
+                next_lr=curr_lr,
+                next_wd=curr_wd,
+                all_lr=ALL_LR,
+                all_wd=ALL_WD,
+                training_loss=TRAINING_LOSS,
+                validation_loss=VALIDATION_LOSS
+            )
 
     print(f'Saving model to {MODEL_DIR}')
-    torch.save(milli_transnet, os.path.join(MODEL_DIR, f'milli_transnet_final.pth'))
-    np.savez(os.path.join(MODEL_DIR, 'loss.npz'),
-             TRAINING_LOSS=TRAINING_LOSS,
-             VALIDATION_LOSS=VALIDATION_LOSS)
-    np.savez(os.path.join(MODEL_DIR, 'lr.npz'),
-             LEARNING_RATES=ALL_LR)
+    save_training_checkpoint(
+        model=milli_transnet,
+        checkpoint_path=os.path.join(MODEL_DIR, FINAL_CHECKPOINT_NAME),
+        epoch=config['N_EPOCHS'] - 1,
+        next_lr=curr_lr,
+        next_wd=curr_wd,
+        all_lr=ALL_LR,
+        all_wd=ALL_WD,
+        training_loss=TRAINING_LOSS,
+        validation_loss=VALIDATION_LOSS
+    )
 
 def run_one_epoch(net,dataset,config,is_learning,curr_lr,curr_wd):
     net.set_trainable(is_learning)

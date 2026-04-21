@@ -6,6 +6,11 @@ import json
 from tqdm import tqdm
 import argparse
 import time
+from Utils.checkpoints import (
+    get_checkpoint_directory,
+    load_milli_transnet_checkpoint,
+    resolve_checkpoint_path,
+)
 from Utils.DataUtils import get_dataset
 from Utils.get_device import get_inference_device_config
 
@@ -25,7 +30,8 @@ def initialize_run():
         threshold_gb=flags.gpu_threshold_gb
     )
 
-    with open(os.path.join(flags.restore_dir,'parameters.json'),'r') as f:
+    restore_root = get_checkpoint_directory(flags.restore_dir)
+    with open(os.path.join(restore_root,'parameters.json'),'r') as f:
         params = json.load(f)
 
     joints_ignore_key = 'JOINTS_IGNORE_IDX' if 'JOINTS_IGNORE_IDX' in params else 'JOINTS_IGNORED_IDX'
@@ -34,7 +40,8 @@ def initialize_run():
         'GPU': device_config['resolved_device_index'],
         'GPU_THRESHOLD_GB': flags.gpu_threshold_gb,
         'AVAILABLE_GPU_INDICES': device_config['available_device_indices'],
-        'RESTORE_DIR': flags.restore_dir,
+        'RESTORE_DIR': restore_root,
+        'RESTORE_PATH': flags.restore_dir,
         'PARAMS': params,
         'NJOINTS': int(params['NJOINTS']),
         'JOINTS_IGNORE_IDX': [int(i) for i in params[joints_ignore_key]],
@@ -43,6 +50,14 @@ def initialize_run():
         'LONG_CH_SIZE': int(params['LONG_CH_SIZE']),
         'SHORT_CH_SIZE': int(params['SHORT_CH_SIZE']),
         'SEQ_LEN': int(params['SEQ_LEN']),
+        'OUTPUT_PROCESSING': params.get('OUTPUT_PROCESSING', 'simple'),
+        'SHAPE_CODE_SIZE': int(params.get('SHAPE_CODE_SIZE', 128)),
+        'N_LAYERS': int(params.get('N_LAYERS', 2)),
+        'N_HEADS': int(params.get('N_HEADS', 16)),
+        'N_DROPOUT': float(params.get('N_DROPOUT', 0.3)),
+        'FWD_EXPANSION': int(params.get('FWD_EXPANSION', 4)),
+        'MODEL_INIT': params.get('MODEL_INIT', 'kaiming_uniform'),
+        'OPTIMIZER': params.get('OPTIMIZER', 'Adam'),
         'MAX_SIGNAL_VAL_H': float(params['MAX_SIGNAL_VAL_H']) if 'MAX_SIGNAL_VAL_H' in params else 1,
         'MAX_SIGNAL_VAL_V': float(params['MAX_SIGNAL_VAL_V']) if 'MAX_SIGNAL_VAL_V' in params else 1,
         'MAX_1D_VAL': float(params['MAX_1D_VAL']) if 'MAX_1D_VAL' in params else 1,
@@ -78,11 +93,16 @@ def descale_n_convert(joints, config):
     return joints_xyz
 
 def test(config):
-    milli_transnet = torch.load(os.path.join(config['RESTORE_DIR'],'milli_transnet_final.pth'), map_location=config['DEVICE'])
-    milli_transnet.set_device(config['DEVICE'])
+    checkpoint_path = resolve_checkpoint_path(config['RESTORE_PATH'], prefer_final=True)
+    milli_transnet, checkpoint = load_milli_transnet_checkpoint(
+        checkpoint_path,
+        config,
+        load_optimizer=False
+    )
     milli_transnet.set_trainable(False)
     milli_transnet.eval()
     device = config['DEVICE']
+    print(f'Loaded checkpoint {checkpoint_path}')
 
     print('Loading data...')
     h_seq, v_seq, joints_seq = get_dataset(TESTING_DIR, config)
