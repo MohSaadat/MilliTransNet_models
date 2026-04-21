@@ -47,6 +47,41 @@ The input is a parsed and processed radar cube represented as a range-doppler-an
 
 The training ground truth is the synchronized Kinect V2 joint sequence corresponding to the radar measurements.
 
+### Running Training and Inference
+
+Run all commands from the repository root.
+
+Training:
+
+```bash
+python main.py
+```
+
+Example training command with explicit settings:
+
+```bash
+python main.py --batch_size 32 --epochs 50 --gpu 0
+```
+
+Inference:
+
+```bash
+python test.py --restore_dir saved_models/<model_directory>
+```
+
+Example inference command:
+
+```bash
+python test.py --restore_dir saved_models/model_1_1_2026_12_0 --gpu 0
+```
+
+Notes:
+
+- `main.py` trains the model and writes checkpoints under `saved_models/`.
+- `test.py` loads a checkpoint directory and runs inference on the test split.
+- Both scripts expect the radar/Kinect dataset under `../input_data` relative to this repository.
+- `--gpu -1` forces CPU execution. If `--gpu` is omitted, the code attempts to auto-select a free GPU.
+
 ## 5. TODO
 
 - To train MilliTransNet effectively, a much larger scale dataset is needed for good convergence.
