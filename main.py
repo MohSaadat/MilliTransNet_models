@@ -18,6 +18,7 @@ from Utils.get_device import get_inference_device_config
 INPUT_DIR = os.path.join('..','input_data')
 TRAINING_DIR = os.path.join(INPUT_DIR,'training')
 VALIDATION_DIR = os.path.join(INPUT_DIR,'validation')
+os.makedirs('saved_models', exist_ok=True)
 MODEL_DIR = os.path.join(
     'saved_models',
     f'model_{dt.now().day}_{dt.now().month}_{dt.now().year}_{dt.now().hour}_{dt.now().minute}'
@@ -160,6 +161,9 @@ def initialize_run():
     return config
 
 def train_n_validate(config):
+    if os.path.exists(MODEL_DIR):
+        print(f'Model directory {MODEL_DIR} already exists. Exiting to avoid overwriting previous runs.')
+        sys.exit(1)
     os.mkdir(MODEL_DIR)
     os.system('zip code_bkup.zip *.py')
     os.system(f'mv code_bkup.zip ./{MODEL_DIR}')
