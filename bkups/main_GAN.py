@@ -10,8 +10,8 @@ import time
 import json
 from tqdm import tqdm
 
-import MilliTransNet
-import SkeletalDiscriminator
+from dnn_modules import SkeletalDiscriminator
+from transformer_modules import MilliTransNet
 
 # fixed
 INPUT_DIR = os.path.join('..','input_data')

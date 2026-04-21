@@ -6,7 +6,7 @@ import json
 from tqdm import tqdm
 import argparse
 import time
-from src.utils.DataUtils import get_dataset
+from Utils.DataUtils import get_dataset
 
 INPUT_DIR = os.path.join('..','input_data')
 TESTING_DIR = os.path.join(INPUT_DIR,'test')

@@ -15,7 +15,7 @@ import random
 #import time
 #import json
 
-import MilliTransNet
+from transformer_modules import MilliTransNet
 
 from functools import partial
 from ray import tune, air

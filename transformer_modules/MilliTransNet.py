@@ -1,16 +1,15 @@
 import torch
 import torch.nn as nn
-import math
-import TransformerModule
-import InputProcessing_MLPProc as InputProcessing
-#import InputProcessing_ConvProc as InputProcessing
+from dnn_modules import InputProcessing_MLPProc as InputProcessing
+#from dnn_modules import InputProcessing_Conv as InputProcessing
 #import TransformerUtils
-import OutputProcessing_SPL
-import OutputProcessing_Simple
-from torch.nn.utils import clip_grad_norm_
 import warnings
+from torch.nn.utils import clip_grad_norm_
 
+from dnn_modules import OutputProcessing_Simple
+from dnn_modules import OutputProcessing_SPL
 from plotting import Kinect_Skeleton as kskel
+from transformer_modules import TransformerModule
 
 class MilliTransNet(nn.Module):
     def __init__(self,

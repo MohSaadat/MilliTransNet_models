@@ -10,8 +10,8 @@ import json
 from tqdm import tqdm
 import random
 
-from src.transformers.MilliTransNet import MilliTransNet
-from src.utils.DataUtils import get_dataset
+from transformer_modules import MilliTransNet
+from Utils.DataUtils import get_dataset
 
 # Directories
 INPUT_DIR = os.path.join('..','input_data')

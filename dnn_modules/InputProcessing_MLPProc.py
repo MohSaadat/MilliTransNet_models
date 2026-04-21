@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 #import math
-from Utils import Conv2DBlock, LinearBlock
+from dnn_modules.Utils import Conv2DBlock, LinearBlock
 
 class _RD_processing(nn.Module):
     def __init__(self,
